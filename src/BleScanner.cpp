@@ -20,18 +20,36 @@ Scanner::Scanner(int reservedSubscribers) {
   subscribers.reserve(reservedSubscribers);
 }
 
+Scanner::~Scanner() {
+  Serial.println("Destroying scanner");
+  bleScan->stop();
+  Serial.println("bleScan stopped");
+  bleScan->clearResults();
+  Serial.println("bleScan results cleared");
+  bleScan = nullptr;
+  Serial.println("bleScan nulled");
+}
+
 void Scanner::initialize(const std::string& deviceName, const bool wantDuplicates, const uint16_t interval, const uint16_t window) {
-  if (!BLEDevice::isInitialized()) {
+  if (!NimBLEDevice::isInitialized()) {
     if (wantDuplicates) {
-      // reduce memory footprint, cache is not used anyway
+      #ifdef CONFIG_BTDM_BLE_SCAN_DUPL
       NimBLEDevice::setScanDuplicateCacheSize(10);
+      #endif
     }
-    BLEDevice::init(deviceName);
+    NimBLEDevice::init(deviceName);
   }
-  bleScan = BLEDevice::getScan();
+
+  bleScan = NimBLEDevice::getScan();
+
+  #ifndef BLESCANNER_USE_LATEST_NIMBLE
+  bleScan->setAdvertisedDeviceCallbacks(this, wantDuplicates);
+  #else
   bleScan->setScanCallbacks(this, wantDuplicates);
+  #endif
   bleScan->setInterval(interval);
   bleScan->setWindow(window);
+  bleScan->setActiveScan(false);
 }
 
 void Scanner::update() {
@@ -39,15 +57,17 @@ void Scanner::update() {
     return;
   }
 
-  bleScan->setMaxResults(0);
+  if (scanDuration == 0) {
+    bleScan->setMaxResults(0);
+  } else {
+    log_w("Ble scanner max results not 0. Be aware of memory issue due to unbridled growth of results vector");
+  }
 
-  NimBLEScanResults result = bleScan->getResults(scanDuration * 1000, false);
-  // if (!result) {
-  //   scanErrors++;
-  //   if (scanErrors % 100 == 0) {
-  //     log_w("BLE Scan error (100x)");
-  //   }
-  // }
+  #ifndef BLESCANNER_USE_LATEST_NIMBLE
+  bool result = bleScan->start(scanDuration, nullptr, false);
+  #else
+  bool result = bleScan->start(scanDuration * 1000, false);
+  #endif
 }
 
 void Scanner::enableScanning(bool enable) {
@@ -79,6 +99,11 @@ void Scanner::onResult(const NimBLEAdvertisedDevice* advertisedDevice) {
   for (const auto& subscriber : subscribers) {
     subscriber->onResult(advertisedDevice);
   }
+}
+
+void Scanner::whitelist(BLEAddress bleAddress) {
+  NimBLEDevice::whiteListAdd(bleAddress);   
+  bleScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
 }
 
 } // namespace BleScanner
